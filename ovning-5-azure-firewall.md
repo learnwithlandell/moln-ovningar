@@ -17,6 +17,8 @@ Du kommer att:
 
 Hela labben genomförs i **Azure Cloud Shell med Bash**.
 
+Labben skapar filerna `fwlab-vars.sh` och `fwlab-test.sh` i den mapp du står i. Kör hela labben från samma mapp.
+
 **Tidsåtgång:** cirka en och en halv timme inklusive väntetid  
 **Förkunskaper:** grundläggande Azure, IP-adressering och Bash  
 **Verktyg:** Azure Cloud Shell (Bash), az CLI 2.90.0 och tillägget `azure-firewall` 2.2.1
@@ -99,10 +101,10 @@ az extension show --name azure-firewall --query version -o tsv
 
 ### Steg 5️⃣ – Spara namn och adresser i en fil
 
-Kommandot skapar filen `fwlab-vars.sh` med alla namn och IP-adresser som labben använder. Filen innehåller också funktionen `fwtest`, som du senare använder för att testa trafiken från den virtuella maskinen.
+Kommandot skapar filen `fwlab-vars.sh` med alla namn och IP-adresser som labben använder.
 
 ```bash
-cat > ~/fwlab-vars.sh <<'EOF'
+cat > fwlab-vars.sh <<'EOF'
 RG=rg-fwlab
 LOC=swedencentral
 VNET=vnet-fwlab
@@ -120,10 +122,6 @@ AFW_PIP=pip-fw-fwlab
 AFW_IPCONF=fw-ipconfig
 AFW_PRIVATE_IP=10.0.1.4
 RT=rt-app
-fwtest() {
-  az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-    --scripts @"$HOME/fwlab-test.sh" --query "value[0].message" -o tsv
-}
 EOF
 ```
 
@@ -133,8 +131,10 @@ EOF
 
 Skriptet körs senare inne på den virtuella maskinen. Det kontrollerar DNS, försöker nå fem webbplatser över HTTPS och hämtar till sist `http://www.facebook.com` över okrypterad HTTP.
 
+Kör det inte direkt på din egen dator. Det skickas till den virtuella maskinen med testkommandot från och med Del 6.
+
 ```bash
-cat > ~/fwlab-test.sh <<'EOF'
+cat > fwlab-test.sh <<'EOF'
 #!/bin/bash
 echo "DNS: $(getent hosts www.wikipedia.org > /dev/null && echo OK || echo FEL)"
 for url in https://www.wikipedia.org https://www.microsoft.com https://www.facebook.com https://www.instagram.com https://www.google.com; do
@@ -157,7 +157,7 @@ EOF
 ### Steg 7️⃣ – Läs in variablerna
 
 ```bash
-source ~/fwlab-vars.sh
+source fwlab-vars.sh
 ```
 
 💡 **Förväntat resultat:** Inget skrivs ut.
@@ -174,7 +174,21 @@ echo "$RG $LOC $SUBNET_APP_PREFIX $VM_IP $AFW_PRIVATE_IP"
 rg-fwlab swedencentral 10.0.2.0/24 10.0.2.4 10.0.1.4
 ```
 
-> 💡 **Tips:** Cloud Shell stängs efter en stunds inaktivitet och då försvinner variablerna. Om ett kommando plötsligt klagar på att ett namn saknas, kör stegen **Spara namn och adresser i en fil**, **Skapa testskriptet** och **Läs in variablerna** igen.
+> ⚠️ **Viktigt:** Med **No storage account required** körs Cloud Shell i en tillfällig session. När sessionen avslutas eller Cloud Shell startas om tas alla filer du sparat bort, även `fwlab-vars.sh` och `fwlab-test.sh`.
+>
+> Kontrollera läget med:
+>
+> ```bash
+> ls fwlab-vars.sh fwlab-test.sh
+> ```
+>
+> Om bara variablerna har försvunnit men båda filerna finns kvar kör du:
+>
+> ```bash
+> source fwlab-vars.sh
+> ```
+>
+> Om sessionen har avslutats eller Cloud Shell har startats om kör du stegen **Spara namn och adresser i en fil** och **Skapa testskriptet** igen och därefter `source fwlab-vars.sh`.
 
 ### Steg 9️⃣ – Kontrollera att VM-storleken finns i regionen
 
@@ -280,28 +294,13 @@ az vm show -g $RG -n $VM -d --query "{status:powerState, privatIp:privateIps, pu
 
 ---
 
-## 🧪 Del 4 – Testa före brandväggen
+## 🧪 Del 4 – Ingen testkörning före brandväggen
 
-Nu kör du testskriptet på den virtuella maskinen. Varje körning tar ungefär en till två minuter.
+Testskriptet körs med `az vm run-command`. Microsoft anger att Run Command kräver utgående anslutning på port 443 till Azures publika IP-adresser för att kunna skicka tillbaka skriptets resultat.
 
-### Steg 1️⃣ – Kör testet
+Maskinen ligger i ett privat subnät, saknar publik IP och har ännu ingen route via brandväggen, så den har ingen sådan väg ut.
 
-```bash
-fwtest
-```
-
-💡 **Förväntat resultat:**
-
-- Utskriften börjar med `Enable succeeded:` och `[stdout]`.
-- Därefter visas `DNS: OK`.
-- Alla fem adresser visar `BLOCKERAD` med curl-fel `28`.
-- Efter raden `Svar pa http://www.facebook.com:` kommer en tom rad.
-
-**Varför?** Subnätet är privat och det finns ännu ingen väg ut. Paketen släpps utan svar och curl ger upp efter 15 sekunder. Felkod `28` betyder timeout.
-
-DNS fungerar ändå eftersom maskinen frågar Azures egen DNS på `168.63.129.16`, som nås inne i plattformen utan internet. Att namnuppslagning fungerar betyder alltså inte att maskinen når internet.
-
----
+Du kör därför inte testkommandot här. Första testkörningen görs i Del 6, när trafiken går via brandväggen och en regel släpper igenom trafiken som Run Command behöver.
 
 ## 🛡️ Del 5 – Skapa Azure Firewall
 
@@ -336,7 +335,7 @@ az network firewall ip-config create -g $RG -f $AFW -n $AFW_IPCONF \
 
 💡 **Förväntat resultat:** Inget skrivs ut när kommandot lyckas.
 
-> 💡 **Bra att veta:** Om Cloud Shell kopplas ner under väntan, öppna Cloud Shell igen, läs in variablerna enligt Del 0 och gå vidare till nästa steg. Driftsättningen fortsätter i Azure även om Cloud Shell stängs.
+> 💡 **Bra att veta:** Om Cloud Shell kopplas ner under väntan, öppna Cloud Shell igen, återställ variablerna och filerna enligt anvisningen i steg 8 i Del 0 och gå vidare till nästa steg. Driftsättningen fortsätter i Azure även om Cloud Shell stängs.
 
 ### Steg 4️⃣ – Uppdatera brandväggen
 
@@ -402,31 +401,57 @@ NIC_ID=$(az vm show -g $RG -n $VM --query "networkProfile.networkInterfaces[0].i
 
 💡 **Förväntat resultat:** Inget skrivs ut.
 
-### Steg 5️⃣ – Kontrollera routes för maskinen
+### Steg 5️⃣ – Kontrollera de routes som gäller för maskinen
 
 ```bash
-az network nic show-effective-route-table --ids $NIC_ID --query "value[?addressPrefix[0]=='0.0.0.0/0'].{kalla:source, status:state, nastaHopp:nextHopType, ip:nextHopIpAddress[0]}" -o table
+az network nic show-effective-route-table -g $RG -n ${NIC_ID##*/} --query "value[?addressPrefix[0]=='0.0.0.0/0'].{kalla:source, status:state, nastaHopp:nextHopType, ip:nextHopIpAddress[0]}" -o table
 ```
 
 💡 **Förväntat resultat:** En rad med `User`, `Active`, `VirtualAppliance` och `10.0.1.4`.
 
 Finns det också en rad med `Default` och `Internet` ska den ha statusen `Invalid`.
 
-### Steg 6️⃣ – Kör testet igen
+### Steg 6️⃣ – Tillåt trafiken som Run Command behöver
 
 ```bash
-fwtest
+az network firewall network-rule create -g $RG -f $AFW \
+  --collection-name net-runcommand --name allow-azurecloud-443 \
+  --action Allow --priority 100 \
+  --protocols TCP \
+  --source-addresses $VM_IP \
+  --destination-addresses AzureCloud \
+  --destination-ports 443 \
+  -o none
+```
+
+💡 **Förväntat resultat:** Raden `WARNING: Creating rule collection 'net-runcommand'`. Efter några minuter kommer prompten tillbaka.
+
+> 💡 **Bra att veta:** Run Command kräver TCP 443 till Azures publika IP-adresser, och Microsoft anger service-taggen `AzureCloud` för att tillåta den trafiken. Regeln är begränsad till källan `10.0.2.4`, protokollet TCP, port 443 och `AzureCloud`. Nätverksregler behandlas före applikationsregler, så HTTPS till adresser som ingår i `AzureCloud` släpps igenom av den här regeln. HTTPS till webbplatser utanför Azure prövas fortfarande mot applikationsreglerna.
+
+### Steg 7️⃣ – Kontrollera nätverksregeln
+
+```bash
+az network firewall network-rule collection list -g $RG -f $AFW --query "[].{samling:name, prioritet:priority, atgard:action.type, antalRegler:length(rules)}" -o table
+```
+
+💡 **Förväntat resultat:** `net-runcommand` med `100`, `Allow` och `1` regel.
+
+### Steg 8️⃣ – Kör testet
+
+Kör kommandot i samma mapp som filen `fwlab-test.sh` ligger i.
+
+```bash
+az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts @fwlab-test.sh --query "value[0].message" -o tsv
 ```
 
 💡 **Förväntat resultat:**
 
 - `DNS: OK`.
-- Alla fem adresser visar fortfarande `BLOCKERAD`.
-- Efter raden `Svar pa http://www.facebook.com:` kommer normalt ett svar från brandväggen som innehåller `Action: Deny`.
+- Adresserna visar `BLOCKERAD`, till exempel med curl-fel `35`.
+- `https://www.microsoft.com` kan visas som `TILLATEN` om adressen den pekar på ingår i `AzureCloud`.
+- Efter raden `Svar pa http://www.facebook.com:` kommer `Action: Deny. Reason: No rule matched. Proceeding with default action.`
 
-**Varför?** Trafiken når nu brandväggen, men den har inga regler. Azure Firewall nekar allt som inte uttryckligen är tillåtet. Svaret på HTTP-förfrågan kommer från brandväggen själv och bevisar att routen fungerar.
-
----
+**Varför?** Trafiken når nu brandväggen, men den har inga regler för webbtrafik. Azure Firewall nekar allt som inte uttryckligen är tillåtet. Svaret på HTTP-förfrågan kommer från brandväggen själv och bevisar att routen fungerar.
 
 ## 🚧 Del 7 – Skapa applikationsregler
 
@@ -481,7 +506,7 @@ az network firewall application-rule collection list -g $RG -f $AFW --query "[].
 ### Steg 4️⃣ – Kör testet
 
 ```bash
-fwtest
+az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts @fwlab-test.sh --query "value[0].message" -o tsv
 ```
 
 💡 **Förväntat resultat:**
@@ -489,7 +514,7 @@ fwtest
 - `TILLATEN https://www.wikipedia.org` med en HTTP-kod i 200- eller 300-serien.
 - `TILLATEN https://www.microsoft.com` med en HTTP-kod i 200- eller 300-serien.
 - `BLOCKERAD` för Facebook, Instagram och Google.
-- Svaret på `http://www.facebook.com` innehåller normalt `Action: Deny`.
+- Svaret på `http://www.facebook.com`: `Action: Deny. Reason: Rule Collection: app-deny. Rule: deny-meta.`
 
 **Varför?** Facebook och Instagram stoppas av `app-deny`. Google finns inte i någon regel och stoppas därför av brandväggens standardregel som nekar allt annat. Blockerad HTTPS syns som ett curl-fel eftersom brandväggen inte kan skicka en läsbar felsida inuti en krypterad anslutning.
 
@@ -536,13 +561,14 @@ az network firewall application-rule collection list -g $RG -f $AFW --query "[].
 ### Steg 4️⃣ – Kör testet
 
 ```bash
-fwtest
+az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts @fwlab-test.sh --query "value[0].message" -o tsv
 ```
 
 💡 **Förväntat resultat:**
 
 - `TILLATEN https://www.google.com`.
 - `BLOCKERAD https://www.facebook.com` – fortfarande.
+- Svaret på `http://www.facebook.com`: `Action: Deny. Reason: Rule Collection: app-deny. Rule: deny-meta.`
 
 **Varför?** Regeln `allow-facebook` finns, men `app-deny` har prioritet `100` och behandlas före `app-allow` med prioritet `200`. Facebook matchar deny-regeln först och då letar brandväggen inte vidare.
 
@@ -577,7 +603,7 @@ Visas `true` pågår borttagningen fortfarande. Vänta några minuter och kör k
 ### Steg 3️⃣ – Ta bort labbfilerna i Cloud Shell
 
 ```bash
-rm -f ~/fwlab-vars.sh ~/fwlab-test.sh
+rm -f fwlab-vars.sh fwlab-test.sh
 ```
 
 💡 **Förväntat resultat:** Inget skrivs ut.
@@ -586,8 +612,8 @@ rm -f ~/fwlab-vars.sh ~/fwlab-test.sh
 
 ## 🧠 Reflektionsfrågor
 
-1. I Del 4 fungerade DNS men inte curl. Förklara varför och vad det säger om att använda `nslookup` som bevis för att en maskin når internet.
-2. Varför var alla adresser fortfarande blockerade i Del 6, trots att routen mot brandväggen fungerade?
+1. I Del 4 kunde testkommandot inte köras. Vilken utgående trafik kräver Run Command, och hur tilläts den i Del 6?
+2. Varför blockerades webbadresserna i Del 6, trots att routen mot brandväggen fungerade?
 3. Regeln `allow-facebook` i Del 8 hade ingen effekt. Beskriv hur du skulle ändra prioriteterna för att göra ett undantag för `www.facebook.com`.
 4. Google stoppades i Del 7 trots att ingen regel nämnde Google. Vilken princip ligger bakom, och varför är den bra ur säkerhetssynpunkt?
 5. Blockerad HTTPS gav ett curl-fel, medan blockerad HTTP gav ett textsvar från brandväggen. Varför skiljer det sig?
@@ -599,23 +625,22 @@ rm -f ~/fwlab-vars.sh ~/fwlab-test.sh
 
 ### `ERROR: Please run 'az login' to setup account.`
 
-Cloud Shell har tappat inloggningen. Kör `az login`, följ instruktionen och läs sedan in variablerna igen:
-
-```bash
-source ~/fwlab-vars.sh
-```
+Cloud Shell har tappat inloggningen. Kör `az login`, följ instruktionen och återställ sedan variablerna och filerna enligt anvisningen i steg 8 i Del 0.
 
 ### Ett kommando klagar på att ett namn saknas eller är tomt
 
-Variablerna har försvunnit, till exempel för att Cloud Shell startades om. Kör stegen **Spara namn och adresser i en fil**, **Skapa testskriptet** och **Läs in variablerna** i Del 0 igen.
+Variablerna har försvunnit. Kontrollera om filerna finns kvar:
+
+```bash
+ls fwlab-vars.sh fwlab-test.sh
+```
+
+- Finns båda filerna kvar: kör `source fwlab-vars.sh`.
+- Har den tillfälliga Cloud Shell-sessionen avslutats eller startats om är filerna borttagna: kör stegen **Spara namn och adresser i en fil** och **Skapa testskriptet** i Del 0 igen och därefter `source fwlab-vars.sh`.
 
 ### Kommandot `az network firewall` känns inte igen
 
-Tillägget `azure-firewall` saknas. Kör steg 3 i Del 0 igen:
-
-```bash
-az extension add --name azure-firewall --upgrade -y
-```
+Tillägget `azure-firewall` saknas. Kör steg 3 i Del 0 igen.
 
 ### `usage error: --collection-name EXISTING_NAME | --collection-name NEW_NAME --priority INT --action ACTION`
 
@@ -632,17 +657,15 @@ Prenumerationen tillåter inte regionen eller VM-storleken.
 
 Brandväggen håller på med en tidigare ändring. Vänta två minuter och kör samma kommando igen.
 
-### `fwtest` visar `BLOCKERAD` för Wikipedia efter Del 7
+### Testkommandot visar `BLOCKERAD` för Wikipedia efter Del 7
 
 - Kör kontrollen av regelsamlingarna i Del 7. Båda samlingarna ska finnas.
 - Kör kontrollen av routes i Del 6. Routen till `10.0.1.4` ska vara `Active`.
 - Kontrollera att brandväggen har den privata adressen `10.0.1.4` enligt Del 5.
 
-### `fwtest` svarar med `Conflict` eller att en körning redan pågår
+### Testkommandot svarar med `Conflict` eller att en körning redan pågår
 
-Den förra testkörningen är inte klar. Vänta en minut och kör `fwtest` igen.
-
----
+Den förra testkörningen är inte klar. Vänta en minut och kör testkommandot igen.
 
 ## 🔗 Källor
 
